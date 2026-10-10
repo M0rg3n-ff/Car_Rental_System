@@ -202,9 +202,17 @@ def book_appointment():
     conn = get_db()
     cursor = conn.cursor()
     
+    car_id = data['car_id']
+    
+    cursor.execute("SELECT status FROM Cars WHERE car_id = ?", (car_id,))
+    car = cursor.fetchone()
+    if not car or car['status'] == 'Rented' or car['status'] == 'Maintenance':
+        conn.close()
+        return jsonify({'success': False, 'message': 'Selected car is no longer available!'}), 400
+
     cursor.execute(
-        "INSERT INTO Appointments (user_id, car_id, driver_id, appointment_date, fulfillment_type) VALUES (?, ?, ?, ?, ?)",
-        (data['user_id'], data['car_id'], data['driver_id'], data['appointment_date'], data['fulfillment_type'])
+        "INSERT INTO Appointments (user_id, car_id, driver_id, appointment_date, fulfillment_type, status) VALUES (?, ?, ?, ?, ?, 'Confirmed')",
+        (data['user_id'], car_id, data['driver_id'], data['appointment_date'], data['fulfillment_type'])
     )
     app_id = cursor.lastrowid
     
@@ -213,8 +221,43 @@ def book_appointment():
         (app_id, data['amount'], data['payment_method'])
     )
     
-    cursor.execute("UPDATE Cars SET status = 'Rented' WHERE car_id = ?", (data['car_id'],))
+    cursor.execute("UPDATE Cars SET status = 'Rented' WHERE car_id = ?", (car_id,))
     
+    if data['driver_id']:
+        cursor.execute("UPDATE Drivers SET status = 'Assigned' WHERE driver_id = ?", (data['driver_id'],))
+
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+@app.route('/api/cancel-appointment', methods=['POST'])
+def cancel_appointment():
+    data = request.json
+    appointment_id = data.get('appointment_id')
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM Appointments WHERE appointment_id = ?", (appointment_id,))
+    app_row = cursor.fetchone()
+    
+    if not app_row:
+        conn.close()
+        return jsonify({'success': False, 'message': 'Appointment not found!'}), 404
+        
+    if app_row['status'] == 'Cancelled':
+        conn.close()
+        return jsonify({'success': False, 'message': 'Appointment is already cancelled!'}), 400
+
+    car_id = app_row['car_id']
+    driver_id = app_row['driver_id']
+
+    cursor.execute("UPDATE Appointments SET status = 'Cancelled' WHERE appointment_id = ?", (appointment_id,))
+    cursor.execute("UPDATE Cars SET status = 'Available' WHERE car_id = ?", (car_id,))
+    
+    if driver_id:
+        cursor.execute("UPDATE Drivers SET status = 'Available' WHERE driver_id = ?", (driver_id,))
+        
     conn.commit()
     conn.close()
     return jsonify({'success': True})
@@ -256,7 +299,7 @@ HTML_TEMPLATE = """
 <body class="bg-slate-900 text-slate-100 min-h-screen font-sans flex flex-col">
 
   <!-- TOP NAVBAR -->
-  <nav class="bg-slate-800/80 backdrop-blur border-b border-slate-700 sticky top-0 z-50">
+  <nav class="bg-slate-800/85 backdrop-blur border-b border-slate-700 sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-16">
         <div class="flex items-center gap-3">
@@ -368,7 +411,7 @@ HTML_TEMPLATE = """
           <label class="block text-sm font-medium text-slate-300">Select Appointment Date and Time</label>
           <input type="datetime-local" id="booking-datetime" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-slate-200 text-sm focus:border-brand-500 focus:outline-none">
           <div class="flex justify-end gap-3 pt-2">
-            <button onclick="cancelBooking()" class="px-4 py-2 bg-slate-700 text-slate-300 rounded-lg text-sm">Exit</button>
+            <button onclick="cancelBookingWizard()" class="px-4 py-2 bg-slate-700 text-slate-300 rounded-lg text-sm">Exit</button>
             <button onclick="nextStep(2)" class="px-5 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-sm font-medium">Continue</button>
           </div>
         </div>
@@ -433,7 +476,7 @@ HTML_TEMPLATE = """
 
           <div class="flex justify-between pt-2">
             <button onclick="nextStep(3)" class="px-4 py-2 bg-slate-700 text-slate-300 rounded-lg text-sm">Go Back</button>
-            <button onclick="processPayment()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium">Confirm & Pay</button>
+            <button onclick="processPayment()" id="btn-confirm-pay" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium">Confirm & Pay</button>
           </div>
         </div>
       </div>
@@ -495,14 +538,19 @@ HTML_TEMPLATE = """
     let authMode = 'login';
     let dbData = { cars: [], drivers: [], appointments: [], payments: [], expenses: [], users: [] };
     let bookingState = { datetime: '', selectedCarId: null, fulfillment: '', selectedDriverId: null };
+    let isSubmittingBooking = false;
 
     function formatPeso(amount) {
       return '₱' + parseFloat(amount).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
     async function fetchDBData() {
-      const res = await fetch('/api/data');
-      dbData = await res.json();
+      try {
+        const res = await fetch('/api/data');
+        dbData = await res.json();
+      } catch (err) {
+        console.error("Error fetching DB data:", err);
+      }
     }
 
     function showLanding() {
@@ -530,19 +578,27 @@ HTML_TEMPLATE = """
 
     function hideAllViews() {
       ['view-landing', 'view-auth', 'view-user-dashboard', 'view-staff-dashboard', 'view-admin-dashboard'].forEach(id => {
-        document.getElementById(id).classList.add('hidden');
+        const el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
       });
     }
 
     async function handleAuthSubmit(e) {
       e.preventDefault();
-      const username = document.getElementById('input-username').value.trim();
-      const password = document.getElementById('input-password').value.trim();
+      const usernameInput = document.getElementById('input-username');
+      const passwordInput = document.getElementById('input-password');
+      const fullnameInput = document.getElementById('input-fullname');
+      const errorDiv = document.getElementById('auth-error');
+
+      if (!usernameInput || !passwordInput) return;
+
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value.trim();
 
       const endpoint = authMode === 'register' ? '/api/register' : '/api/login';
       const bodyData = authMode === 'register' ? {
         username, password,
-        full_name: document.getElementById('input-fullname').value.trim() || username
+        full_name: (fullnameInput ? fullnameInput.value.trim() : '') || username
       } : { username, password };
 
       try {
@@ -553,16 +609,18 @@ HTML_TEMPLATE = """
         });
         const result = await res.json();
 
-        if (result.success) {
+        if (res.ok && result.success) {
           currentUser = result.user;
           await fetchDBData();
           routeDashboard();
         } else {
-          document.getElementById('auth-error').innerText = result.message || 'Error occurred';
-          document.getElementById('auth-error').classList.remove('hidden');
+          errorDiv.innerText = result.message || 'Invalid credentials or registration error!';
+          errorDiv.classList.remove('hidden');
         }
       } catch (err) {
-        document.getElementById('auth-error').classList.remove('hidden');
+        console.error("Auth error:", err);
+        errorDiv.innerText = 'Server connection error!';
+        errorDiv.classList.remove('hidden');
       }
     }
 
@@ -595,7 +653,7 @@ HTML_TEMPLATE = """
       const userApps = dbData.appointments.filter(a => a.user_id === currentUser.user_id);
 
       if (userApps.length === 0) {
-        listEl.innerHTML = `<p class="text-sm text-slate-400">No active appointments found in SQLite DB.</p>`;
+        listEl.innerHTML = `<p class="text-sm text-slate-400">No appointments found in SQLite DB.</p>`;
         return;
       }
 
@@ -603,6 +661,11 @@ HTML_TEMPLATE = """
         const car = dbData.cars.find(c => c.car_id === app.car_id);
         const driver = app.driver_id ? dbData.drivers.find(d => d.driver_id === app.driver_id) : null;
         const payment = dbData.payments.find(p => p.appointment_id === app.appointment_id);
+        
+        let statusBadgeClass = 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
+        if (app.status === 'Cancelled') {
+          statusBadgeClass = 'bg-red-500/20 text-red-400 border-red-500/30';
+        }
 
         return `
           <div class="bg-slate-900 border border-slate-700/80 rounded-xl p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
@@ -611,13 +674,44 @@ HTML_TEMPLATE = """
               <div class="text-xs text-slate-400 mt-1">Date: ${app.appointment_date} | Type: <span class="text-brand-400 font-medium">${app.fulfillment_type}</span></div>
               ${driver ? `<div class="text-xs text-slate-400">Driver: ${driver.full_name} (${driver.phone_number})</div>` : ''}
             </div>
-            <div class="text-right">
-              <span class="inline-block px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">${app.status}</span>
-              <div class="text-xs font-bold text-brand-400 mt-1">${payment ? formatPeso(payment.amount) : ''}</div>
+            <div class="flex items-center gap-4">
+              <div class="text-right">
+                <span class="inline-block px-2.5 py-1 text-xs font-semibold rounded-full border ${statusBadgeClass}">${app.status}</span>
+                <div class="text-xs font-bold text-brand-400 mt-1">${payment ? formatPeso(payment.amount) : ''}</div>
+              </div>
+              ${app.status === 'Confirmed' ? `
+                <button onclick="cancelAppointment(${app.appointment_id})" class="px-3 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white border border-red-500/30 rounded-lg text-xs transition">
+                  Cancel
+                </button>
+              ` : ''}
             </div>
           </div>
         `;
       }).join('');
+    }
+
+    async function cancelAppointment(appointmentId) {
+      if (!confirm('Are you sure you want to cancel this appointment?')) return;
+
+      try {
+        const res = await fetch('/api/cancel-appointment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ appointment_id: appointmentId })
+        });
+        const result = await res.json();
+
+        if (res.ok && result.success) {
+          alert('Appointment successfully cancelled.');
+          await fetchDBData();
+          renderUserDashboard();
+        } else {
+          alert(result.message || 'Failed to cancel appointment.');
+        }
+      } catch (err) {
+        console.error("Cancel error:", err);
+        alert('Server error while cancelling appointment.');
+      }
     }
 
     function startBooking() {
@@ -626,7 +720,7 @@ HTML_TEMPLATE = """
       nextStep(1);
     }
 
-    function cancelBooking() {
+    function cancelBookingWizard() {
       document.getElementById('booking-wizard').classList.add('hidden');
     }
 
@@ -662,6 +756,11 @@ HTML_TEMPLATE = """
     function renderAvailableCars() {
       const grid = document.getElementById('cars-grid');
       const availableCars = dbData.cars.filter(c => c.status === 'Available');
+
+      if (availableCars.length === 0) {
+        grid.innerHTML = `<p class="text-sm text-slate-400 col-span-2">No available cars at the moment.</p>`;
+        return;
+      }
 
       grid.innerHTML = availableCars.map(car => `
         <div onclick="selectCar(${car.car_id})" id="car-card-${car.car_id}" class="car-card cursor-pointer p-4 rounded-xl border border-slate-700 bg-slate-900/60 hover:border-brand-500 transition">
@@ -702,6 +801,11 @@ HTML_TEMPLATE = """
       const list = document.getElementById('drivers-list');
       const availDrivers = dbData.drivers.filter(d => d.status === 'Available');
 
+      if (availDrivers.length === 0) {
+        list.innerHTML = `<p class="text-xs text-slate-400">No drivers available. Please choose Pick-up instead.</p>`;
+        return;
+      }
+
       list.innerHTML = availDrivers.map(d => `
         <div onclick="selectDriver(${d.driver_id})" id="driver-card-${d.driver_id}" class="driver-card cursor-pointer p-3 rounded-lg border border-slate-700 bg-slate-900 hover:border-brand-500 transition flex justify-between items-center text-xs">
           <div>
@@ -721,27 +825,46 @@ HTML_TEMPLATE = """
     }
 
     async function processPayment() {
+      if (isSubmittingBooking) return;
+      isSubmittingBooking = true;
+      const confirmBtn = document.getElementById('btn-confirm-pay');
+      confirmBtn.disabled = true;
+      confirmBtn.innerText = 'Processing...';
+
       const car = dbData.cars.find(c => c.car_id === bookingState.selectedCarId);
 
-      const res = await fetch('/api/book', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: currentUser.user_id,
-          car_id: bookingState.selectedCarId,
-          driver_id: bookingState.selectedDriverId,
-          appointment_date: bookingState.datetime,
-          fulfillment_type: bookingState.fulfillment,
-          amount: car.rental_rate,
-          payment_method: document.getElementById('payment-method').value
-        })
-      });
+      try {
+        const res = await fetch('/api/book', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: currentUser.user_id,
+            car_id: bookingState.selectedCarId,
+            driver_id: bookingState.selectedDriverId,
+            appointment_date: bookingState.datetime,
+            fulfillment_type: bookingState.fulfillment,
+            amount: car ? car.rental_rate : 0,
+            payment_method: document.getElementById('payment-method').value
+          })
+        });
 
-      if (res.ok) {
-        alert('Saved to Python Database! Appointment Confirmed.');
-        cancelBooking();
-        await fetchDBData();
-        renderUserDashboard();
+        const result = await res.json();
+
+        if (res.ok && result.success) {
+          alert('Saved to Python Database! Appointment Confirmed.');
+          cancelBookingWizard();
+          await fetchDBData();
+          renderUserDashboard();
+        } else {
+          alert(result.message || 'Booking failed. Please try again.');
+        }
+      } catch (err) {
+        console.error("Booking error:", err);
+        alert('Server connection error during booking.');
+      } finally {
+        isSubmittingBooking = false;
+        confirmBtn.disabled = false;
+        confirmBtn.innerText = 'Confirm & Pay';
       }
     }
 
@@ -762,12 +885,21 @@ HTML_TEMPLATE = """
       `).join('');
 
       const appsEl = document.getElementById('staff-appointments-list');
-      appsEl.innerHTML = dbData.appointments.map(a => {
+      const activeApps = dbData.appointments.filter(a => a.status !== 'Cancelled');
+      if (activeApps.length === 0) {
+        appsEl.innerHTML = `<p class="text-xs text-slate-400">No active customer appointments.</p>`;
+        return;
+      }
+
+      appsEl.innerHTML = activeApps.map(a => {
         const u = dbData.users.find(usr => usr.user_id === a.user_id);
         const c = dbData.cars.find(car => car.car_id === a.car_id);
         return `
           <div class="bg-slate-900 p-3 rounded-lg border border-slate-700/60 text-xs space-y-1">
-            <div class="font-semibold text-slate-200">Customer: ${u ? u.full_name : 'User'}</div>
+            <div class="flex justify-between font-semibold text-slate-200">
+              <span>Customer: ${u ? u.full_name : 'User'}</span>
+              <span class="text-emerald-400">${a.status}</span>
+            </div>
             <div class="text-slate-400">Car: ${c ? c.model : ''} | Date: ${a.appointment_date}</div>
           </div>
         `;
@@ -801,7 +933,12 @@ HTML_TEMPLATE = """
 
       const salesEl = document.getElementById('admin-sales-list');
       let totalSales = 0;
-      salesEl.innerHTML = dbData.payments.map(p => {
+      const validPayments = dbData.payments.filter(p => {
+        const app = dbData.appointments.find(a => a.appointment_id === p.appointment_id);
+        return app && app.status !== 'Cancelled';
+      });
+
+      salesEl.innerHTML = validPayments.map(p => {
         totalSales += p.amount;
         const app = dbData.appointments.find(a => a.appointment_id === p.appointment_id);
         const user = app ? dbData.users.find(u => u.user_id === app.user_id) : null;
