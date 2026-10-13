@@ -306,7 +306,7 @@ HTML_TEMPLATE = """
           <div class="bg-brand-600 p-2 rounded-lg text-white">
             <i class="fa-solid fa-car-side text-xl"></i>
           </div>
-          <span class="font-bold text-xl tracking-tight text-white">DriveEase <span class="text-brand-500 text-xs uppercase px-2 py-0.5 rounded bg-brand-500/10 border border-brand-500/20">Python Edition</span></span>
+          <span class="font-bold text-xl tracking-tight text-white">DriveEase</span>
         </div>
 
         <div id="nav-user-info" class="hidden flex items-center gap-4">
@@ -392,7 +392,7 @@ HTML_TEMPLATE = """
       <div class="bg-slate-800 rounded-2xl p-6 border border-slate-700 flex flex-col md:flex-row items-center justify-between gap-4">
         <div>
           <h1 class="text-2xl font-bold text-white">Customer Dashboard</h1>
-          <p class="text-slate-400 text-sm">Book appointments directly linked to Python SQLite database.</p>
+          <p class="text-slate-400 text-sm">Book appointments easily.</p>
         </div>
         <button onclick="startBooking()" class="bg-brand-600 hover:bg-brand-500 text-white px-5 py-2.5 rounded-xl font-medium shadow-lg shadow-brand-600/30 transition">
           <i class="fa-solid fa-calendar-plus mr-2"></i> Book Appointment
@@ -653,7 +653,7 @@ HTML_TEMPLATE = """
       const userApps = dbData.appointments.filter(a => a.user_id === currentUser.user_id);
 
       if (userApps.length === 0) {
-        listEl.innerHTML = `<p class="text-sm text-slate-400">No appointments found in SQLite DB.</p>`;
+        listEl.innerHTML = `<p class="text-sm text-slate-400">No appointments found.</p>`;
         return;
       }
 
@@ -851,7 +851,7 @@ HTML_TEMPLATE = """
         const result = await res.json();
 
         if (res.ok && result.success) {
-          alert('Saved to Python Database! Appointment Confirmed.');
+          alert('Appointment Confirmed.');
           cancelBookingWizard();
           await fetchDBData();
           renderUserDashboard();
