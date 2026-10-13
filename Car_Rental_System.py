@@ -331,7 +331,7 @@ HTML_TEMPLATE = """
         <i class="fa-solid fa-database"></i>
       </div>
       <h2 class="text-2xl font-bold text-white mb-2">Welcome to DriveEase</h2>
-      <p class="text-slate-400 text-sm mb-6">Car Rental System (Persistent SQLite Backend)</p>
+      <p class="text-slate-400 text-sm mb-6">Car Rental System</p>
       
       <div class="space-y-3">
         <button onclick="showAuthView('login')" class="w-full bg-brand-600 hover:bg-brand-500 text-white font-medium py-3 rounded-xl transition shadow-lg shadow-brand-600/30">
